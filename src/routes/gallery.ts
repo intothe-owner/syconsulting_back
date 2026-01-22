@@ -84,10 +84,19 @@ router.post(
       }
 
       return res.json({ message: "ok", items: results });
-    } catch (e) {
-        console.log(e);
-      next(e);
-    }
+    } catch (e: any) {
+    console.error("[gallery/upload] error:", e); // ✅ 서버 콘솔 출력
+
+    const status =
+      e?.status || (e?.code === "LIMIT_FILE_SIZE" ? 413 : 500);
+
+    return res.status(status).json({
+      ok: false,
+      message: e?.message ,
+      code: e?.code,          // multer 등에서 유용
+      name: e?.name,
+    });
+  }
   }
 );
 

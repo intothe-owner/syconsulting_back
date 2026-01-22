@@ -1,3 +1,5 @@
 import { Notice } from "./Notice";
 import { Qna } from "./QnA";
-export { Notice,Qna };
+import { Faq } from "./Faq";
+import { Gallery  } from "./Gallery";
+export { Notice,Qna,Faq,Gallery  };

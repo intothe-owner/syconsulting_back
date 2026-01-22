@@ -8,6 +8,7 @@ import noticeRouter from "./routes/notices";
 import qnaRouter from "./routes/qna";
 import faqRouter from "./routes/faq";
 import applyRouter from "./routes/apply";
+import galleryRouter from "./routes/gallery";
 import cookieParser from "cookie-parser";
 
 const app = express();
@@ -29,6 +30,7 @@ app.use("/notices",noticeRouter);
 app.use("/qna",qnaRouter);
 app.use("/faq",faqRouter);
 app.use("/apply",applyRouter);
+app.use("/gallery", galleryRouter);
 
 // ✅ DB 부트스트랩 + 테이블 생성(sync)
 async function bootstrap() {

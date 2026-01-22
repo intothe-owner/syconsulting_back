@@ -85,6 +85,7 @@ router.post(
 
       return res.json({ message: "ok", items: results });
     } catch (e) {
+        console.log(e);
       next(e);
     }
   }

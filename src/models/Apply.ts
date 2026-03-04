@@ -34,6 +34,8 @@ export class Apply extends Model<
   declare address: string;
 
   declare motivation: string;
+  // 지인추천
+  declare recommender: string;
   declare howFound:
     | "홈페이지"
     | "지인추천"
@@ -109,7 +111,11 @@ Apply.init(
       allowNull: false,
       comment: "지원동기",
     },
-
+    recommender: {
+      type: DataTypes.STRING(120),
+      allowNull: false,
+      comment: "주소(구/군 + 동/읍/면)",
+    },
     howFound: {
       type: DataTypes.ENUM(
         "홈페이지",

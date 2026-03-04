@@ -27,7 +27,7 @@ type ApplyBody = {
 
   phoneDigits?: string;
   address?: string;
-
+  recommender?:string;
   privacyAgree?: boolean;
 };
 
@@ -286,6 +286,7 @@ router.get("/", async (req: Request, res: Response) => {
         "howFound",
         "status",
         "privacyAgree",
+        "recommender",
         "createdAt",
         "updatedAt",
       ],
@@ -385,6 +386,7 @@ router.post("/", async (req: Request, res: Response) => {
       address,
       motivation: String(body.motivation).trim(),
       howFound: body.howFound as any,
+      recommender:String(body.recommender),
       privacyAgree: true,
       status: "NEW",
     });
@@ -423,6 +425,10 @@ router.post("/", async (req: Request, res: Response) => {
               <td style="padding:8px 10px;border:1px solid #e5e7eb;white-space:pre-wrap">${esc(
                 body.motivation || "-"
               )}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 10px;border:1px solid #e5e7eb;background:#f9fafb">추천인</td>
+              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(body.recommender || "-")}</td>
             </tr>
           </tbody>
         </table>

@@ -113,8 +113,8 @@ Apply.init(
     },
     recommender: {
       type: DataTypes.STRING(120),
-      allowNull: false,
-      comment: "주소(구/군 + 동/읍/면)",
+      allowNull: true,
+      comment: "추천인",
     },
     howFound: {
       type: DataTypes.ENUM(

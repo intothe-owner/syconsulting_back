@@ -3,14 +3,22 @@ import { z } from "zod";
 import * as jwt from "jsonwebtoken";
 import { verifyPassword } from "../utils/password";
 import { authJwt } from "../middleware/authJwt";
-
+import bcrypt from "bcrypt";
 const r = Router();
 
 const adminLoginSchema = z.object({
   adminId: z.string().min(1),
   password: z.string().min(1),
 });
+r.get("/admin/hash", async (req, res) => {
+  const password = "!sy1234!";
+  const hash = await bcrypt.hash(password, 10);
 
+  res.json({
+    password,
+    hash
+  });
+});
 r.post("/admin/login", async (req, res) => {
   const parsed = adminLoginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: "Invalid body" });

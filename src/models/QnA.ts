@@ -4,31 +4,41 @@ import {
   InferAttributes,
   InferCreationAttributes,
   CreationOptional,
+  NonAttribute,
+  HasOneGetAssociationMixin,
+  HasOneCreateAssociationMixin,
 } from "sequelize";
 import { sequelize } from "../db/sequelize";
+import { QnaAnswer } from "./QnaAnswer";
 
-export class Qna extends Model<InferAttributes<Qna>, InferCreationAttributes<Qna>> {
+export class Qna extends Model<
+  InferAttributes<Qna, { omit: "answer" }>,
+  InferCreationAttributes<Qna, { omit: "answer" }>
+> {
   declare id: CreationOptional<number>;
-
-  declare category: string; // 카테고리
-  declare question: string; // 질문
-  declare answer: CreationOptional<string | null>; // 답변(없을 수 있음)
-
-  declare views: CreationOptional<number>; // 조회수
-  declare answered: CreationOptional<boolean>; // 답변 완료 여부
-
-  // ✅ 비밀글/비밀번호(해시)
+  declare title: string;
+  declare content: string;
+  declare authorName: string;
+  declare password: string;
   declare isSecret: CreationOptional<boolean>;
-  declare passwordHash: CreationOptional<string | null>;
+  declare views: CreationOptional<number>;
 
-  // ✅ 자동방지번호/캡차 관련(서버 검증을 붙일 경우 대비)
-  // - "자동방지번호 이미지"는 보통 저장 안 함
-  // - 필요하면 제출 시도/차단을 위해 토큰/검증값 일부를 저장할 수 있음(옵션)
-  declare captchaVerifiedAt: CreationOptional<Date | null>;
-
-  // ✅ timestamps
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
+
+  declare answer?: NonAttribute<QnaAnswer | null>;
+
+  declare getAnswer: HasOneGetAssociationMixin<QnaAnswer>;
+  declare createAnswer: HasOneCreateAssociationMixin<QnaAnswer>;
+
+  static associate() {
+    Qna.hasOne(QnaAnswer, {
+      foreignKey: "qnaId",
+      as: "answer",
+      onDelete: "CASCADE",
+      hooks: true,
+    });
+  }
 }
 
 Qna.init(
@@ -39,87 +49,64 @@ Qna.init(
       primaryKey: true,
       comment: "Q&A ID",
     },
-
-    category: {
-      type: DataTypes.STRING(50),
+    title: {
+      type: DataTypes.STRING(200),
       allowNull: false,
-      defaultValue: "기타",
-      comment: "카테고리",
+      comment: "질문 제목",
     },
-
-    question: {
-      type: DataTypes.STRING(500),
-      allowNull: false,
-      comment: "질문",
-    },
-
-    answer: {
+    content: {
       type: DataTypes.TEXT("long"),
-      allowNull: true,
-      comment: "답변(없으면 NULL)",
+      allowNull: false,
+      comment: "질문 내용",
     },
-
+    authorName: {
+      type: DataTypes.STRING(100),
+      allowNull: false,
+      field: "author_name",
+      comment: "작성자명",
+    },
+    password: {
+      type: DataTypes.STRING(255),
+      allowNull: false,
+      comment: "글 비밀번호",
+    },
+    isSecret: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: "is_secret",
+      comment: "비밀글 여부",
+    },
     views: {
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: false,
       defaultValue: 0,
       comment: "조회수",
     },
-
-    answered: {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: false,
-      comment: "답변완료 여부",
-    },
-
-    isSecret: {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: false,
-      comment: "비밀글 여부",
-      field: "is_secret",
-    },
-
-    passwordHash: {
-      type: DataTypes.STRING(128),
-      allowNull: true,
-      comment: "비밀글 비밀번호 해시(평문 저장 금지)",
-      field: "password_hash",
-    },
-
-    captchaVerifiedAt: {
-      type: DataTypes.DATE,
-      allowNull: true,
-      comment: "자동방지번호(캡차) 확인 완료 시각(옵션)",
-      field: "captcha_verified_at",
-    },
-
-    // ✅ createdAt/updatedAt을 attributes에 명시 (Notice 방식 그대로)
     createdAt: {
       type: DataTypes.DATE,
       allowNull: false,
-      comment: "생성일",
       field: "created_at",
+      comment: "생성일",
     },
     updatedAt: {
       type: DataTypes.DATE,
       allowNull: false,
-      comment: "수정일",
       field: "updated_at",
+      comment: "수정일",
     },
   },
   {
     sequelize,
-    tableName: "qna",
+    tableName: "qnas",
     timestamps: true,
     underscored: true,
-    comment: "Q&A",
+    comment: "Q&A 질문",
     indexes: [
-      { name: "idx_qna_created_at", fields: ["created_at"] },
-      { name: "idx_qna_category", fields: ["category"] },
-      { name: "idx_qna_answered", fields: ["answered"] },
-      { name: "idx_qna_is_secret", fields: ["is_secret"] },
+      { name: "idx_qnas_created_at", fields: ["created_at"] },
+      { name: "idx_qnas_title", fields: ["title"] },
+      { name: "idx_qnas_author_name", fields: ["author_name"] },
+      { name: "idx_qnas_is_secret", fields: ["is_secret"] },
     ],
   }
 );

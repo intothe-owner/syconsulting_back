@@ -2,48 +2,50 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { sequelize } from "./db/sequelize";
-import "./models"; // ✅ 모델 import(Notice.init 등) 반드시 sync 전에 실행
-import authRouter from "./routes/auth.routes";
-import noticeRouter from "./routes/notices";
-import qnaRouter from "./routes/qna";
+import "./models";
+import siteBannerRouter from "./routes/siteBanner";
+import siteContentsRouter from "./routes/siteContents";
+import noticesRouter from "./routes/notices";
+import galleriesRouter from "./routes/galleries";
+import qnasRouter from "./routes/qnas";
 import faqRouter from "./routes/faq";
-import applyRouter from "./routes/apply";
-import galleryRouter from "./routes/gallery";
-import fcmRouter from "./routes/fcm";
 import cookieParser from "cookie-parser";
-
+import authRouter from "./routes/auth.routes";
+import applyRouter from "./routes/apply";
+import captchaRouter from "./routes/captcha";
 const app = express();
-const corsOptions: cors.CorsOptions = { 
+
+const corsOptions: cors.CorsOptions = {
   origin: [
-    'http://localhost:3000',
-    'http://113.131.151.103:8088',
-    'http://www.syconsulting.co.kr',
-    'http://syconsulting.co.kr'
+    "http://localhost:3000",
+    "http://113.131.151.103:3000",
+    "http://113.131.151.103:8088",
+    "http://www.syconsulting.co.kr",
+    "http://syconsulting.co.kr",
   ],
   credentials: true,
-  methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 };
+
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
+app.use("/uploads", express.static("uploads"));
 
+app.use("/site-banners", siteBannerRouter);
+app.use("/site-contents", siteContentsRouter);
+app.use("/notices", noticesRouter);
+app.use("/galleries", galleriesRouter);
+app.use("/qnas", qnasRouter);
+app.use("/faq", faqRouter);
 app.use("/auth", authRouter);
-app.use("/notices",noticeRouter);
-app.use("/qna",qnaRouter);
-app.use("/faq",faqRouter);
-app.use("/apply",applyRouter);
-app.use("/gallery", galleryRouter);
-app.use("/fcm",fcmRouter);
-
-// ✅ DB 부트스트랩 + 테이블 생성(sync)
+app.use("/apply", applyRouter);
+app.use("/captcha", captchaRouter);
 async function bootstrap() {
   try {
     await sequelize.authenticate();
     console.log("✅ DB 연결 성공");
 
-    // 개발 편의 옵션:
-    // force: true  -> 매번 DROP 후 CREATE (데이터 날아감)
-    // alter: true  -> 스키마 변경을 테이블에 반영(개발용)
     const syncMode = (process.env.DB_SYNC_MODE || "alter") as "alter" | "force" | "none";
 
     if (syncMode !== "none") {

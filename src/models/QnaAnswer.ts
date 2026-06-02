@@ -9,7 +9,7 @@ import {
   BelongsToGetAssociationMixin,
 } from "sequelize";
 import { sequelize } from "../db/sequelize";
-import { Qna } from "./Qna";
+import { Qna } from "./QnA";
 
 export class QnaAnswer extends Model<
   InferAttributes<QnaAnswer, { omit: "qna" }>,

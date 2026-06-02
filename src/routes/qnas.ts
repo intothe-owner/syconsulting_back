@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Op } from "sequelize";
 import bcrypt from "bcryptjs";
 import { sequelize } from "../db/sequelize";
-import { Qna } from "../models/Qna";
+import { Qna } from "../models/QnA";
 import { QnaAnswer } from "../models/QnaAnswer";
 import { authJwt } from "../middleware/authJwt";
 import { requireAdmin } from "../middleware/requireAdmin";
@@ -133,7 +133,7 @@ r.get("/", async (req, res) => {
     });
 
     return res.json({
-      items: rows.map((item) => toQnaListItem(item as Qna & { answer?: QnaAnswer | null })),
+      items: rows.map((item:any) => toQnaListItem(item as Qna & { answer?: QnaAnswer | null })),
       page,
       pageSize,
       total: count,

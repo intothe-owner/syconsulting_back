@@ -1,36 +1,14 @@
-// ✅ apply.routes.ts (FIREBASE_SERVICE_ACCOUNT_JSON "그대로 JSON" 방식)
-// - 신청 저장 성공
-// - 이메일 발송
-// - FCM 토큰 테이블에서 활성 토큰 조회 후 푸시 발송(실패 토큰 자동 비활성화)
-// --------------------------------------------
-
-import { Router, Request, Response } from "express";
-import { sendEmail } from "../utils/mailer";
-import { Apply } from "../models/Apply";
-
-// ✅ FCM
-import admin from "firebase-admin";
-import { FcmToken } from "../models/FcmToken"; // ✅ 경로 맞게 수정
+import { Router } from "express";
+import { z } from "zod";
 import { Op } from "sequelize";
-
-const router = Router();
-
-// ✅ 신청 폼 타입(필드명은 프론트와 맞추세요)
-type ApplyBody = {
-  classType?: "AI" | "CODING" | "";
-  name?: string;
-  phone?: string; // 하이픈 포함 가능
-  district?: string; // 구/군
-  neighborhoodDetail?: string; // 동네
-  motivation?: string;
-  howFound?: string;
-
-  phoneDigits?: string;
-  address?: string;
-  recommender?:string;
-  privacyAgree?: boolean;
+import { Apply, ApplyStatus } from "../models/Apply";
+import { verifyCaptcha } from "../utils/captchaStore";
+import { sendEmail } from "../utils/mailer";
+const r = Router();
+type CaptchaStoreItem = {
+  text: string;
+  expiresAt: number;
 };
-
 const esc = (v: any) =>
   String(v ?? "")
     .replace(/&/g, "&amp;")
@@ -38,332 +16,141 @@ const esc = (v: any) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-
 const onlyDigits = (v: any) => String(v ?? "").replace(/[^0-9]/g, "");
+const captchaStore = new Map<string, CaptchaStoreItem>();
 
-// ✅ Firebase Admin 초기화 (한번만)
-// ✅ 환경변수: FIREBASE_SERVICE_ACCOUNT_JSON 에 "서비스계정 JSON 전체"를 그대로 넣는 방식
-function ensureFirebaseAdmin() {
-  if (admin.apps.length) return;
+function cleanupCaptchaStore() {
+  const now = Date.now();
+  for (const [key, value] of captchaStore.entries()) {
+    if (value.expiresAt < now) {
+      captchaStore.delete(key);
+    }
+  }
+}
+const classTypeEnum = z.enum(["","AI", "CODING"]);
+const statusEnum = z.enum(["","NEW", "CONTACTED", "DONE", "CANCELLED"]);
 
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is missing");
+const createSchema = z.object({
+  classType: classTypeEnum,
+  name: z.string().trim().min(2).max(100),
+  phone: z.string().trim().min(10).max(30),
+  phoneDigits: z.string().trim().min(10).max(20),
+  district: z.string().trim().min(1).max(50),
+  neighborhoodDetail: z.string().trim().min(1).max(120),
+  address: z.string().trim().min(1).max(255),
+  motivation: z.string().trim().min(1),
+  howFound: z.string().trim().min(1).max(100),
+  recommender: z.string().trim().max(100).optional().nullable(),
+  privacyAgree: z.coerce.boolean(),
+  captchaId: z.string().trim().min(1),
+  captchaText: z.string().trim().min(1).max(20),
+  captchaStartedAt: z.coerce.number().int().positive(),
+});
 
-  // ✅ JSON 그대로 파싱 (base64 아님)
-  // ✅ private_key 내 줄바꿈이 \n 형태로 들어가 있어야 함.
-  const serviceAccount = JSON.parse(raw);
+const listSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(10),
+  q: z.string().optional(),
+  classType: classTypeEnum.optional(),
+  status: statusEnum.optional(),
+  district: z.string().optional(),
+  order: z.enum(["new", "old"]).default("new"),
+});
 
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+const updateStatusSchema = z.object({
+  status: statusEnum,
+});
+
+const bulkDeleteSchema = z.object({
+  ids: z.array(z.coerce.number().int().positive()).min(1),
+});
+
+const bulkStatusSchema = z.object({
+  ids: z.array(z.coerce.number().int().positive()).min(1),
+  status: statusEnum,
+});
+
+function toListItem(item: Apply) {
+  return {
+    id: item.id,
+    classType: item.classType,
+    name: item.name,
+    phone: item.phone,
+    phoneDigits: item.phoneDigits,
+    district: item.district,
+    neighborhoodDetail: item.neighborhoodDetail,
+    address: item.address,
+    howFound: item.howFound,
+    recommender: item.recommender,
+    privacyAgree: item.privacyAgree,
+    status: item.status,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function toDetail(item: Apply) {
+  return {
+    id: item.id,
+    classType: item.classType,
+    name: item.name,
+    phone: item.phone,
+    phoneDigits: item.phoneDigits,
+    district: item.district,
+    neighborhoodDetail: item.neighborhoodDetail,
+    address: item.address,
+    motivation: item.motivation,
+    howFound: item.howFound,
+    recommender: item.recommender,
+    privacyAgree: item.privacyAgree,
+    status: item.status,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+/**
+ * 공개 신청 등록
+ * POST /apply
+ */
+r.post("/", async (req, res) => {
+  const parsed = createSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "잘못된 신청 데이터입니다." });
+  }
+
+  const data = parsed.data;
+
+  if (!data.privacyAgree) {
+    return res.status(400).json({ message: "개인정보처리방침 동의가 필요합니다." });
+  }
+
+  if (data.howFound === "지인추천" && !data.recommender?.trim()) {
+    return res.status(400).json({ message: "지인추천인 경우 추천인을 입력해주세요." });
+  }
+
+  // ✅ 자동입력방지 검증
+  const captchaResult = verifyCaptcha({
+    captchaId: data.captchaId,
+    captchaText: data.captchaText,
+    captchaStartedAt: data.captchaStartedAt,
   });
-}
 
-// ✅ FCM 발송 유틸: 활성 토큰 전체에 멀티캐스트(최대 500개씩)
-async function sendFcmToAllDevices(params: {
-  title: string;
-  body: string;
-  url: string;
-}) {
-  ensureFirebaseAdmin();
-
-  // ✅ 활성 토큰만
-  const rows = await FcmToken.findAll({
-    where: { isActive: true },
-    attributes: ["token"],
-    order: [["updatedAt", "DESC"]],
-  });
-
-  const tokens = rows.map((r: any) => r.token).filter(Boolean);
-
-  if (!tokens.length) return { sent: 0, success: 0, failure: 0 };
-
-  // ✅ 500개씩 자르기
-  const chunks: string[][] = [];
-  for (let i = 0; i < tokens.length; i += 500) chunks.push(tokens.slice(i, i + 500));
-
-  let totalSuccess = 0;
-  let totalFailure = 0;
-
-  for (const chunk of chunks) {
-    const resp = await admin.messaging().sendEachForMulticast({
-      tokens: chunk,
-      notification: {
-        title: params.title,
-        body: params.body,
-      },
-      data: {
-        url: params.url, // ✅ 앱에서 push_url로 받아 WebView loadUrl 하게 연결
-      },
-    });
-
-    totalSuccess += resp.successCount;
-    totalFailure += resp.failureCount;
-
-    // ✅ 실패 토큰 정리(특히 not registered)
-    const invalidTokens: string[] = [];
-    resp.responses.forEach((r, idx) => {
-      if (!r.success) {
-        const msg = r.error?.message ?? "";
-        if (msg.includes("registration-token-not-registered")) {
-          invalidTokens.push(chunk[idx]);
-        }
-      }
-    });
-
-    if (invalidTokens.length) {
-      await FcmToken.update(
-        { isActive: false },
-        { where: { token: invalidTokens } }
-      );
-    }
+  if (!captchaResult.ok) {
+    return res.status(400).json({ message: captchaResult.message });
   }
 
-  return { sent: tokens.length, success: totalSuccess, failure: totalFailure };
-}
-const ALLOWED_STATUS = ["NEW", "CONTACTED", "DONE", "CANCELLED"] as const;
-type ApplyStatus = (typeof ALLOWED_STATUS)[number];
-
-function isValidStatus(v: any): v is ApplyStatus {
-  return ALLOWED_STATUS.includes(v);
-}
-
-function toIds(raw: any): number[] {
-  const ids = Array.isArray(raw) ? raw : [];
-  return ids
-    .map((x) => Number(x))
-    .filter((n) => Number.isFinite(n) && n > 0);
-}
-
-/**
- * ✅ 개별 삭제
- * DELETE /apply/:id
- */
-router.delete("/:id", async (req: Request, res: Response) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id) || id <= 0) {
-      return res.status(400).json({ message: "잘못된 id" });
-    }
-
-    const item = await Apply.findByPk(id);
-    if (!item) return res.status(404).json({ message: "데이터가 없습니다." });
-
-    await item.destroy();
-    return res.status(200).json({ ok: true });
-  } catch (e) {
-    console.error("apply delete error:", e);
-    return res.status(500).json({ message: "서버 오류" });
-  }
-});
-
-/**
- * ✅ 일괄 삭제
- * POST /apply/bulk-delete
- * body: { ids: number[] }
- */
-router.post("/bulk-delete", async (req: Request, res: Response) => {
-  try {
-    const ids = toIds(req.body?.ids);
-    if (!ids.length) return res.status(400).json({ message: "ids가 필요합니다." });
-
-    const deleted = await Apply.destroy({ where: { id: { [Op.in]: ids } } });
-    return res.status(200).json({ ok: true, deleted });
-  } catch (e) {
-    console.error("apply bulk-delete error:", e);
-    return res.status(500).json({ message: "서버 오류" });
-  }
-});
-
-/**
- * ✅ 개별 상태 변경
- * PATCH /apply/:id/status
- * body: { status: "NEW"|"CONTACTED"|"DONE"|"CANCELLED" }
- */
-router.patch("/:id/status", async (req: Request, res: Response) => {
-  try {
-    const id = Number(req.params.id);
-    const status = req.body?.status;
-
-    if (!Number.isFinite(id) || id <= 0) {
-      return res.status(400).json({ message: "잘못된 id" });
-    }
-    if (!isValidStatus(status)) {
-      return res.status(400).json({ message: "status 값이 올바르지 않습니다." });
-    }
-
-    const item = await Apply.findByPk(id);
-    if (!item) return res.status(404).json({ message: "데이터가 없습니다." });
-
-    await item.update({ status });
-    return res.status(200).json({ ok: true, item });
-  } catch (e) {
-    console.error("apply status error:", e);
-    return res.status(500).json({ message: "서버 오류" });
-  }
-});
-
-/**
- * ✅ 일괄 상태 변경
- * PATCH /apply/bulk-status
- * body: { ids: number[], status: "NEW"|"CONTACTED"|"DONE"|"CANCELLED" }
- */
-router.patch("/bulk-status", async (req: Request, res: Response) => {
-  try {
-    const ids = toIds(req.body?.ids);
-    const status = req.body?.status;
-
-    if (!ids.length) return res.status(400).json({ message: "ids가 필요합니다." });
-    if (!isValidStatus(status)) {
-      return res.status(400).json({ message: "status 값이 올바르지 않습니다." });
-    }
-
-    const [updated] = await Apply.update(
-      { status },
-      { where: { id: { [Op.in]: ids } } }
-    );
-
-    return res.status(200).json({ ok: true, updated });
-  } catch (e) {
-    console.error("apply bulk-status error:", e);
-    return res.status(500).json({ message: "서버 오류" });
-  }
-});
-
-router.get("/", async (req: Request, res: Response) => {
-  try {
-    const page = Math.max(1, Number(req.query.page ?? 1));
-    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 20)));
-    const offset = (page - 1) * pageSize;
-
-    const q = String(req.query.q ?? "").trim();
-    const classType = String(req.query.classType ?? "").trim(); // AI|CODING
-    const status = String(req.query.status ?? "").trim(); // NEW|...
-    const district = String(req.query.district ?? "").trim();
-    const order = String(req.query.order ?? "new"); // new|old
-    const from = String(req.query.from ?? "").trim(); // YYYY-MM-DD
-    const to = String(req.query.to ?? "").trim(); // YYYY-MM-DD
-
-    const where: any = {};
-
-    if (classType === "AI" || classType === "CODING") where.classType = classType;
-    if (status) where.status = status;
-    if (district) where.district = district;
-
-    // 날짜 범위(createdAt)
-    if (from || to) {
-      where.createdAt = {};
-      if (from) where.createdAt[Op.gte] = new Date(`${from}T00:00:00.000Z`);
-      if (to) where.createdAt[Op.lte] = new Date(`${to}T23:59:59.999Z`);
-    }
-
-    // 통합 검색
-    if (q) {
-      where[Op.or] = [
-        { name: { [Op.like]: `%${q}%` } },
-        { phone: { [Op.like]: `%${q}%` } },
-        { phoneDigits: { [Op.like]: `%${q}%` } },
-        { address: { [Op.like]: `%${q}%` } },
-        { motivation: { [Op.like]: `%${q}%` } },
-        { howFound: { [Op.like]: `%${q}%` } },
-      ];
-    }
-
-    const { rows, count } = await Apply.findAndCountAll({
-      where,
-      offset,
-      limit: pageSize,
-      order: [["createdAt", order === "old" ? "ASC" : "DESC"]],
-      // ✅ 목록에서는 필요한 것만 내려주기 (관리자 UI 속도)
-      attributes: [
-        "id",
-        "classType",
-        "name",
-        "phone",
-        "phoneDigits",
-        "district",
-        "neighborhoodDetail",
-        "address",
-        "howFound",
-        "status",
-        "privacyAgree",
-        "recommender",
-        "createdAt",
-        "updatedAt",
-      ],
-    });
-
-    return res.status(200).json({
-      ok: true,
-      page,
-      pageSize,
-      total: count,
-      totalPages: Math.ceil(count / pageSize),
-      items: rows,
-    });
-  } catch (error) {
-    console.error("apply list error:", error);
-    return res.status(500).json({ message: "서버 오류" });
-  }
-});
-
-/**
- * ✅ 상세
- * GET /apply/:id
- */
-router.get("/:id", async (req: Request, res: Response) => {
-  try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id) || id <= 0) {
-      return res.status(400).json({ message: "잘못된 id" });
-    }
-
-    const item = await Apply.findByPk(id);
-
-    if (!item) {
-      return res.status(404).json({ message: "데이터가 없습니다." });
-    }
-
-    return res.status(200).json({ ok: true, item });
-  } catch (error) {
-    console.error("apply detail error:", error);
-    return res.status(500).json({ message: "서버 오류" });
-  }
-});
-router.post("/", async (req: Request, res: Response) => {
-  try {
-    const body = (req.body ?? {}) as ApplyBody;
-
-    // ✅ 최소 검증
-    if (!body.classType || !body.name || !body.phone) {
-      return res.status(400).json({ message: "필수 항목 누락" });
-    }
-    if (!body.district || !body.neighborhoodDetail) {
-      return res
-        .status(400)
-        .json({ message: "사는 동네(구/군, 동/읍/면)를 입력해 주세요." });
-    }
-    if (!body.motivation || !String(body.motivation).trim()) {
-      return res.status(400).json({ message: "지원동기를 입력해 주세요." });
-    }
-    if (!body.howFound) {
-      return res.status(400).json({ message: "알게 된 계기를 선택해 주세요." });
-    }
-    if (!body.privacyAgree) {
-      return res
-        .status(400)
-        .json({ message: "개인정보처리방침 동의가 필요합니다." });
-    }
-
     const classLabel =
-      body.classType === "AI"
+      data.classType === "AI"
         ? "AI 수업"
-        : body.classType === "CODING"
+        : data.classType === "CODING"
         ? "코딩 수업"
         : "-";
 
-    const phoneDigits = body.phoneDigits?.trim()
-      ? onlyDigits(body.phoneDigits)
-      : onlyDigits(body.phone);
+    const phoneDigits = data.phoneDigits?.trim()
+      ? onlyDigits(data.phoneDigits)
+      : onlyDigits(data.phone);
 
     if (phoneDigits.length < 10 || phoneDigits.length > 11) {
       return res
@@ -372,31 +159,28 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     const address =
-      body.address?.trim() ||
-      [body.district, body.neighborhoodDetail].filter(Boolean).join(" ").trim();
-
-    // ✅ 1) DB 저장
-    const saved = await Apply.create({
-      classType: body.classType as "AI" | "CODING",
-      name: String(body.name).trim(),
-      phone: String(body.phone).trim(),
-      phoneDigits,
-      district: String(body.district).trim(),
-      neighborhoodDetail: String(body.neighborhoodDetail).trim(),
-      address,
-      motivation: String(body.motivation).trim(),
-      howFound: body.howFound as any,
-      recommender:String(body.recommender),
-      privacyAgree: true,
+      data.address?.trim() ||
+      [data.district, data.neighborhoodDetail].filter(Boolean).join(" ").trim();
+    const created = await Apply.create({
+      classType: data.classType,
+      name: data.name,
+      phone: data.phone,
+      phoneDigits: data.phoneDigits,
+      district: data.district,
+      neighborhoodDetail: data.neighborhoodDetail,
+      address: data.address,
+      motivation: data.motivation,
+      howFound: data.howFound,
+      recommender: data.recommender?.trim() || null,
+      privacyAgree: data.privacyAgree,
       status: "NEW",
     });
-
     // --- 이메일 본문 ---
     const html = `
       <div style="font-family:Arial,sans-serif;line-height:1.6">
         <h2 style="margin:0 0 12px">수강 신청 접수</h2>
         <p style="margin:0 0 10px;color:#6b7280;font-size:12px">
-          신청번호: <b>${esc(saved.id)}</b>
+          신청번호: <b>${esc(created.id)}</b>
         </p>
         <table style="width:100%;border-collapse:collapse">
           <tbody>
@@ -406,11 +190,11 @@ router.post("/", async (req: Request, res: Response) => {
             </tr>
             <tr>
               <td style="padding:8px 10px;border:1px solid #e5e7eb;background:#f9fafb">이름</td>
-              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(body.name)}</td>
+              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(data.name)}</td>
             </tr>
             <tr>
               <td style="padding:8px 10px;border:1px solid #e5e7eb;background:#f9fafb">연락처</td>
-              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(body.phone)}</td>
+              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(data.phone)}</td>
             </tr>
             <tr>
               <td style="padding:8px 10px;border:1px solid #e5e7eb;background:#f9fafb">사는 동네</td>
@@ -418,17 +202,17 @@ router.post("/", async (req: Request, res: Response) => {
             </tr>
             <tr>
               <td style="padding:8px 10px;border:1px solid #e5e7eb;background:#f9fafb">알게 된 계기</td>
-              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(body.howFound || "-")}</td>
+              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(data.howFound || "-")}</td>
             </tr>
             <tr>
               <td style="padding:8px 10px;border:1px solid #e5e7eb;background:#f9fafb">지원동기</td>
               <td style="padding:8px 10px;border:1px solid #e5e7eb;white-space:pre-wrap">${esc(
-                body.motivation || "-"
+                data.motivation || "-"
               )}</td>
             </tr>
             <tr>
               <td style="padding:8px 10px;border:1px solid #e5e7eb;background:#f9fafb">추천인</td>
-              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(body.recommender || "-")}</td>
+              <td style="padding:8px 10px;border:1px solid #e5e7eb">${esc(data.recommender || "-")}</td>
             </tr>
           </tbody>
         </table>
@@ -437,35 +221,205 @@ router.post("/", async (req: Request, res: Response) => {
         </p>
       </div>
     `;
-
-    // ✅ 2) 이메일 발송
     await sendEmail({
       to: "shindong1440@gmail.com",
-      subject: `수강신청 - ${classLabel} (${esc(body.name)})`,
+      subject: `수강신청 - ${classLabel} (${esc(data.name)})`,
       html,
     });
-
-    // ✅ 3) 이메일 발송 후 FCM도 같이 발송
-    const pushTitle = "수강신청 접수";
-    const pushBody = `${classLabel} 신청이 접수되었습니다. (${esc(body.name)})`;
-    const pushUrl = "http://www.syconsulting.co.kr/admin/apply"; // ✅ 관리자 화면 URL로 수정 권장
-
-    try {
-      const result = await sendFcmToAllDevices({
-        title: pushTitle,
-        body: pushBody,
-        url: pushUrl,
-      });
-      console.log("FCM result:", result);
-    } catch (e) {
-      console.error("FCM send error:", e);
-    }
-
-    return res.status(200).json({ ok: true, id: saved.id });
+    return res.status(201).json({
+      ok: true,
+      item: toDetail(created),
+    });
   } catch (error) {
-    console.error("신청 처리 오류:", error);
-    return res.status(500).json({ message: "서버 오류" });
+    console.error(error);
+    return res.status(500).json({ message: "수강신청 등록 중 오류가 발생했습니다." });
   }
 });
 
-export default router;
+/**
+ * 목록 조회
+ * GET /apply
+ */
+r.get("/", async (req, res) => {
+  const parsed = listSchema.safeParse(req.query);
+  console.log(parsed);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "잘못된 조회 파라미터입니다." });
+  }
+
+  const { page, pageSize, q, classType, status, district, order } = parsed.data;
+  const offset = (page - 1) * pageSize;
+
+  const where: any = {};
+
+  if (q?.trim()) {
+    const keyword = `%${q.trim()}%`;
+    where[Op.or] = [
+      { name: { [Op.like]: keyword } },
+      { phone: { [Op.like]: keyword } },
+      { phoneDigits: { [Op.like]: keyword } },
+      { address: { [Op.like]: keyword } },
+    ];
+  }
+
+  if (classType) where.classType = classType;
+  if (status) where.status = status;
+  if (district?.trim()) where.district = district.trim();
+
+  try {
+    const { rows, count } = await Apply.findAndCountAll({
+      where,
+      order: [["createdAt", order === "old" ? "ASC" : "DESC"]],
+      limit: pageSize,
+      offset,
+    });
+
+    return res.json({
+      items: rows.map(toListItem),
+      page,
+      pageSize,
+      total: count,
+      totalPages: Math.ceil(count / pageSize),
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "수강신청 목록 조회 중 오류가 발생했습니다." });
+  }
+});
+
+/**
+ * 상세 조회
+ * GET /apply/:id
+ */
+r.get("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ message: "잘못된 ID입니다." });
+  }
+
+  try {
+    const item = await Apply.findByPk(id);
+    if (!item) {
+      return res.status(404).json({ message: "수강신청을 찾을 수 없습니다." });
+    }
+
+    return res.json({
+      item: toDetail(item),
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "수강신청 상세 조회 중 오류가 발생했습니다." });
+  }
+});
+
+/**
+ * 개별 상태 변경
+ * PATCH /apply/:id/status
+ */
+r.patch("/:id/status", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ message: "잘못된 ID입니다." });
+  }
+
+  const parsed = updateStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "잘못된 상태값입니다." });
+  }
+
+  try {
+    const item = await Apply.findByPk(id);
+    if (!item) {
+      return res.status(404).json({ message: "수강신청을 찾을 수 없습니다." });
+    }
+
+    item.status = parsed.data.status as ApplyStatus;
+    await item.save();
+
+    return res.json({
+      ok: true,
+      item: toDetail(item),
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "상태 변경 중 오류가 발생했습니다." });
+  }
+});
+
+/**
+ * 일괄 상태 변경
+ * PATCH /apply/bulk-status
+ */
+r.patch("/bulk-status", async (req, res) => {
+  const parsed = bulkStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "잘못된 요청 데이터입니다." });
+  }
+
+  try {
+    const [updatedCount] = await Apply.update(
+      { status: parsed.data.status },
+      { where: { id: { [Op.in]: parsed.data.ids } } }
+    );
+
+    return res.json({
+      ok: true,
+      updatedCount,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "일괄 상태 변경 중 오류가 발생했습니다." });
+  }
+});
+
+/**
+ * 개별 삭제
+ * DELETE /apply/:id
+ */
+r.delete("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ message: "잘못된 ID입니다." });
+  }
+
+  try {
+    const item = await Apply.findByPk(id);
+    if (!item) {
+      return res.status(404).json({ message: "수강신청을 찾을 수 없습니다." });
+    }
+
+    await item.destroy();
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "삭제 중 오류가 발생했습니다." });
+  }
+});
+
+/**
+ * 일괄 삭제
+ * POST /apply/bulk-delete
+ */
+r.post("/bulk-delete", async (req, res) => {
+  const parsed = bulkDeleteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "삭제할 항목을 선택해주세요." });
+  }
+
+  try {
+    const deletedCount = await Apply.destroy({
+      where: { id: { [Op.in]: parsed.data.ids } },
+    });
+
+    return res.json({
+      ok: true,
+      deletedCount,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "일괄 삭제 중 오류가 발생했습니다." });
+  }
+});
+
+export default r;

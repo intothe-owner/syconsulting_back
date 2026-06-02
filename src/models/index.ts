@@ -7,7 +7,7 @@ import { Notice } from "./Notice";
 import { NoticeAttachment } from "./NoticeAttachment";
 import { Gallery } from "./Gallery";
 import { GalleryImage } from "./GalleryImage";
-import { Qna } from "./Qna";
+import { Qna } from "./QnA";
 import { QnaAnswer } from "./QnaAnswer";
 import { Faq } from "./Faq";
 import { Apply } from "./Apply";

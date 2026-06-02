@@ -33,7 +33,7 @@ app.use("/qna",qnaRouter);
 app.use("/faq",faqRouter);
 app.use("/apply",applyRouter);
 app.use("/gallery", galleryRouter);
-app.use("/fcm",fcmRouter);
+app.use("/fcm",fcmRouter); 
 
 // ✅ DB 부트스트랩 + 테이블 생성(sync)
 async function bootstrap() {

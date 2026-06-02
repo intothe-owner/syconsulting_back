@@ -13,7 +13,6 @@ import cookieParser from "cookie-parser";
 import authRouter from "./routes/auth.routes";
 import applyRouter from "./routes/apply";
 import captchaRouter from "./routes/captcha";
-import fcmRouter from "./routes/fcm";
 const app = express();
 
 const corsOptions: cors.CorsOptions = {
@@ -45,7 +44,6 @@ app.use("/qna",qnasRouter);
 app.use("/faq",faqRouter);
 app.use("/apply",applyRouter);
 app.use("/gallery", galleriesRouter);
-app.use("/fcm",fcmRouter);
 
 // ✅ DB 부트스트랩 + 테이블 생성(sync)
 async function bootstrap() {

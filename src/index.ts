@@ -22,6 +22,8 @@ const corsOptions: cors.CorsOptions = {
     "http://113.131.151.103:8088",
     "http://www.syconsulting.co.kr",
     "http://syconsulting.co.kr",
+    "https://www.syconsulting.co.kr",
+    "https://syconsulting.co.kr",
   ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
